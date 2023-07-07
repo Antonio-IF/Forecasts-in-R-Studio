@@ -1,0 +1,418 @@
+---
+title: "Final Proyect"
+author: "Juan Antonio Mugica Liparoli"
+date: "3/12/2020"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = FALSE)
+```
+
+
+## Paqueterías
+
+library(easypackages)
+libraries("tidyverse","fpp3", "patchwork","plotly")
+library(tidyverse)
+library(tidyquant)
+library(tsibble)
+library(plotly)
+library(lubridate)
+library(ggplot2)
+library(patchwork)
+library(shiny)
+library(tibble)
+library(GGally)
+library(fable)
+library(fable.prophet)
+
+```{r message=FALSE, warning=FALSE}
+library(easypackages)
+libraries("tidyverse","fpp3", "patchwork","plotly")
+library(tidyverse)
+library(tidyquant)
+library(tsibble)
+library(plotly)
+library(lubridate)
+library(ggplot2)
+library(patchwork)
+library(shiny)
+library(tibble)
+library(GGally)
+library(fable)
+library(fable.prophet)
+```
+
+
+## Introduction
+
+For this project we chose the Australian production series to analyze the correlation between the Beer and Tobacco variables, as at first glance they appeared to be similar products. However, despite having believed that these two would be correlated, we tested the different production variables within the series to see between which ones there was a higher correlation.
+
+
+## Visual Data
+
+```{r}
+production <- aus_production %>%
+  select(Quarter, Beer, Tobacco)
+  
+production <- production %>%
+  filter_index("1956 Q1" ~ "2004 Q2")
+
+production
+
+```
+
+
+## Graph of both variables {.smaller}
+
+The graphs show that before 1980, beer and tobacco production were both on the rise, but later tobacco production began to decline, which could be due to greater government regulation of tobacco consumption.
+
+```{r}
+production %>%
+  pivot_longer(cols = -Quarter) %>%
+  ggplot(aes(x = Quarter, y = value, color = name)) +
+  geom_line() +
+  facet_wrap(~ name, scales = "free_y") +
+  theme(legend.position = "none")
+```
+
+
+## Forecasts
+
+```{r, message=FALSE, warning=FALSE}
+data_training <- production %>%
+  pivot_longer(cols = -Quarter)%>%
+  update_tsibble(key = name,index= Quarter )%>%
+  filter_index( . ~ "1995Q4" )%>%
+  filter(name== "Beer")
+
+# Beer Model
+
+Beer_model <- data_training %>%
+  model(
+    `Prophet Auto` = prophet(value),
+    additive = ETS( value ~ error("A") + trend("A") ),
+    multiplicative = ETS(value ~ error("M") + trend("M")),
+    Mean = MEAN(value),
+    `Naïve` = NAIVE(value),
+    Drift = RW(value ~ drift()),
+    `ARIMA` = ARIMA(value ~ PDQ(0,0,0),
+              stepwise = FALSE, approximation = FALSE)
+    )
+
+prediction <- Beer_model %>% 
+  forecast(h = 34)
+
+p<- prediction %>%
+  autoplot(data_training, level = NULL) +
+  autolayer(filter_index(production, "1995Q4" ~ .)) +
+  ggtitle("Forecasts for 1 year to production of Beer") +
+  xlab("Date") + ylab("Value") +
+  guides(colour = guide_legend(title = "Forecast")) +
+  geom_vline(xintercept = as.Date("1995-01-01"), color = "firebrick",
+             linetype = "dashed")
+p
+
+```
+
+
+
+## Interactive forecasting
+
+```{r}
+p <- prediction %>% 
+  ggplot(aes(x = Quarter, y = .mean)) +
+  geom_line(aes(color = .model)) + 
+  geom_line(data = production, aes(y = Beer)) 
+ggplotly(p)
+```
+
+
+## Accuracy {.smaller}
+
+Based on the MAPE the best models to predict the behavior of the series are the ARIMA, Prophet auto, the Additive and the Multiplicative, however the best is the Multiplicative model with an error of less than 3.1%.
+
+```{r}
+accuracy(Beer_model)
+```
+
+
+## ARIMA Forecast
+
+ Based on the above graphs and analysis, we will focus on the ARIMA model which is the best fit over time. 
+ 
+```{r}
+fit <- production %>%
+  model(ARIMA(Beer ~ PDQ(0,0,0),
+              stepwise = FALSE, approximation = FALSE))
+report(fit)
+```
+
+## Model evaluation
+
+```{r, message=FALSE, warning=FALSE}
+graph_waste <- function(model = "Mean"){
+Beer_model %>%
+select(model) %>%
+gg_tsresiduals() +
+ggtitle(paste("Graphic Waste", model))
+}
+
+graph_waste("ARIMA")
+```
+
+
+
+## Model evaluation
+```{r}
+graph_waste("Prophet Auto")
+
+```
+
+
+## Ljung- Box transformation for ARIMA {.smaller}
+
+The p-value turns out to be very high, so we cannot distinguish the residuals from the white noise.
+
+With the residual plots we observe that the residuals of the Naive and Drift model we can observe autocorrelations, so transformations can still be done.
+
+
+```{r}
+aug <- production %>% model(`ARIMA` = ARIMA(Beer ~ PDQ(0,0,0),
+              stepwise = FALSE, approximation = FALSE)) %>% augment()
+aug %>% autoplot(.resid) + xlab("Día") + ylab("") +
+  ggtitle("Residuals ARIMA method")
+
+# lag=h and fitdf=K
+aug %>% features(.resid, box_pierce, lag=10, dof=0)
+
+aug %>% features(.resid, ljung_box, lag=10, dof=0)
+```
+
+
+## Time plot of both series
+
+```{r}
+production %>%
+  ggplot(aes(x = Quarter)) +
+  geom_line(aes(y = Beer, colour = "Beer")) +
+  geom_line(aes(y = Tobacco, colour = "Tobacco")) +
+  ylab("Change %") + xlab("Year") +
+  guides(colour=guide_legend(title="Series")) + 
+  theme(legend.position = "top")
+```
+
+
+## Correlation with other variables
+
+```{r, message=FALSE, warning=FALSE} 
+correlation <- aus_production %>% 
+  as_tibble() %>% 
+  select(-Quarter) %>% 
+  GGally::ggpairs()
+
+correlation
+```
+
+
+
+
+
+## Correlations
+
+The reason we had chosen to work with the variables "Beer" and "Tobacco" was because we believed that these would have a higher correlation. However, given the graphs we see that this is not the case, but that the variables with the highest correlation are the "Electricity" and "Gas" variables. 
+
+
+## Plots of all variables
+
+```{r, message=FALSE, warning=FALSE}
+aus_production %>% 
+  pivot_longer(cols = -Quarter) %>% 
+  ggplot(aes(x = Quarter, y = value, color = name)) +
+  geom_line() +
+  facet_wrap(~ name, scales = "free_y") +
+  theme(legend.position = "none")
+```
+
+## Second Plot
+
+```{r, message=FALSE, warning=FALSE}
+aus_production %>% 
+  pivot_longer(cols = -c(Quarter, Beer)) %>% 
+  ggplot(aes(x = Quarter, y = value, color = name)) +
+  geom_line() +
+  geom_line(aes(y = Beer), color = "black") +
+  facet_wrap(~ name, scales = "free_y") +
+  theme(legend.position = "none")
+```
+
+## Scatterplot Variables Beer and Tobacco
+
+```{r, message=FALSE, warning=FALSE}
+production %>%
+  ggplot(aes(x=Beer, y=Tobacco)) +
+    ylab("Consumption (change % quarterly)") +
+    xlab("Income (change quarterly %)") +
+    geom_point() +
+    geom_smooth(method="lm", se=FALSE)
+
+```
+
+## Electricity and Gas Scatter Plot
+
+```{r, message=FALSE, warning=FALSE}
+production2 <- aus_production %>%
+  select(Quarter, Electricity, Gas)
+  
+production2 <- production2 %>%
+  filter_index("1956 Q1" ~ "2004 Q2")
+
+production2 %>%
+  ggplot(aes(x=Electricity, y=Gas)) +
+    ylab("Consumption (change % quarterly)") +
+    xlab("Income (change quarterly %)") +
+    geom_point() +
+    geom_smooth(method="lm", se=FALSE)
+```
+
+
+## Differences
+
+The first diagram is a clear example of two variables that are not so correlated, while the second diagram, after having seen the correlations between each of the variables in the series, shows that they are highly correlated.
+
+
+## Fit *Electricity / Gas*
+
+```{r}
+fit1 <- production2 %>% 
+  model(reg_lin_simple = TSLM(Electricity ~ Gas)
+        )
+fit1 %>%  report()
+```
+
+---
+
+```{r}
+augment(fit1) %>% 
+  ggplot(aes(x = Quarter)) +
+  geom_line(aes(y = Electricity , color = "Data")) +
+  geom_line(aes(y = .fitted, color = "Fitted"))+
+  xlab("Year") + ylab(NULL) +
+  ggtitle("Production changes") +
+  guides(color = guide_legend(title = NULL))
+```
+
+
+---
+
+```{r}
+augment(fit1) %>% 
+  ggplot(aes(x = Electricity, y = .fitted)) +
+  geom_point() +
+  ylab("Fitted (adjusted values)") +
+  xlab("Data (historical actuals)") +
+  ggtitle("Changes in production") +
+  geom_abline(intercept = 0, slope = 1)
+```
+
+---
+
+```{r}
+
+fit1 %>% 
+  gg_tsresiduals()
+```
+
+
+## Scenario-based forecasting 
+
+Based on the BIC, the best model includes all predictors.
+
+```{r}
+aus_production %>% 
+  model(i = TSLM(Electricity ~ Gas + Tobacco + Beer + Bricks),
+        ii = TSLM(Electricity ~ Gas + Tobacco + Beer),
+        iii = TSLM(Electricity ~ Gas + Tobacco),
+        iv = TSLM(Electricity ~ Gas + Beer),
+        v = TSLM(Electricity ~ Tobacco + Beer),
+        vi = TSLM(Electricity ~ Gas + Beer + Bricks),
+        vii = TSLM(Electricity ~ Tobacco + Beer + Bricks),
+        viii = TSLM(Electricity ~ Gas + Tobacco + Bricks)
+        ) %>% 
+  glance() %>% 
+  select(.model, adj_r_squared, AIC, AICc, BIC)
+```
+
+
+## Optimistic and pessimistic scenarios
+
+
+```{r}
+fit_scenarios <- aus_production %>% 
+  model(lineal = TSLM(Electricity ~ Gas + Tobacco + Beer + Bricks))
+# We need to add new predictor data
+Optimistic_future <- new_data(aus_production,34) %>% 
+  mutate(Gas = 240, 
+         Tobacco = 5027, 
+         Beer = 378,
+         Bricks= 435)
+
+pessimistic_future <- new_data(aus_production ,34) %>% 
+  mutate(Gas = 180, 
+         Tobacco = 3500, 
+         Beer = 300,
+         Bricks= 220)
+
+fc_optimistic <- forecast(fit_scenarios, new_data = Optimistic_future) %>% 
+  mutate(Scenario = "Optimistic") %>% 
+  as_fable(response = "Electricidad", key = c("Scenario",".model"))
+
+fc_pessimistic <- forecast(fit_scenarios, new_data = pessimistic_future) %>% 
+  mutate(Scenario = "Pessimistic") %>% 
+  as_fable(response = "Electricidad", key = c("Scenario",".model"))
+
+
+
+Scenario_together <- aus_production %>% 
+  autoplot(Electricity) +
+  autolayer(bind_rows(fc_optimistic,fc_pessimistic)) +
+  ggtitle("Forecast with optimistic and pessimistic scenario ")
+
+Scenario_op <- aus_production %>% 
+  autoplot(Electricity) +
+  autolayer(fc_optimistic) +
+  ggtitle("Scenario optimistic")
+  
+Scenario_pes <- aus_production %>% 
+  autoplot(Electricity) +
+  autolayer(fc_pessimistic) +
+  ggtitle("Scenario pessimistic")
+
+Scenario_together
+
+```
+
+
+## Scenarios in the same plot
+
+```{r}
+Scenario_op / Scenario_pes
+```
+
+
+
+## Conclusions
+
+
+-Thanks to this project we can conclude that for our time series to be analyzed, the best fitting models were: Additive Model, Arima, Multiplicative and Prophet Auto. 
+
+-The fact that some models fit better than others depends on the type of series we are working with, however it never hurts to try several models to see which one is the best.
+
+
+
+
+## Conclusions
+
+-We also learned that it is always better to do tests and a good analysis before assuming things, at the beginning we were sure that there was a correlation between tobacco and beer production and it was not the case, the electricity and gas variables were more correlated.
+
